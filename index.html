@@ -43,12 +43,22 @@ body{margin:0;min-height:100vh;background:var(--ink);color:var(--text);font-fami
 .badge{display:inline-block;font-size:10px;font-weight:600;padding:2px 7px;border-radius:6px;margin-left:7px;vertical-align:middle;}
 .ccy{font-size:10px;color:var(--brass);font-weight:600;margin-left:6px;}
 .card-val{font-size:15px;font-weight:600;text-align:right;}
+.acq{background:var(--surface2);border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-bottom:7px;cursor:pointer;}
+.acq-top{display:flex;justify-content:space-between;gap:10px;font-size:13.5px;font-weight:600;}
+.acq-sub{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;color:var(--muted);margin-top:4px;}
+.card-peso{font-size:10.5px;color:var(--muted);text-align:right;margin-top:2px;}
 .card-sub{display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:12.5px;color:var(--muted);gap:8px;}
 .chip{font-weight:600;}
 .empty{text-align:center;color:var(--muted);padding:40px 24px;font-size:14px;line-height:1.5;}
 .empty svg{opacity:.5;margin-bottom:12px;}
 .chartcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 12px 12px;margin-bottom:12px;}
 .chart-title{font-size:13px;font-weight:600;margin:0 4px 10px;}
+.chart-head{display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;}
+.chart-head .chart-title{margin-bottom:10px;flex:1;}
+.chev{color:var(--muted);display:flex;margin-bottom:10px;transition:transform .15s;transform:rotate(-90deg);}
+.chev.giu{transform:rotate(0deg);}
+.sec-toggle{display:flex;align-items:center;gap:7px;cursor:pointer;flex:1;}
+.sec-count{font-size:11px;color:var(--muted);font-weight:500;text-transform:none;letter-spacing:0;}
 .legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin:8px 6px 2px;}
 .leg{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);}
 .dot{width:9px;height:9px;border-radius:2px;flex-shrink:0;}
@@ -195,9 +205,134 @@ function ic(name,size,color){
 }
 
 /* ============ stato ============ */
-var S=null, TAB="att", MODAL=null, SORT="def", SAVE_OK=null;
+var S=null, TAB="att", MODAL=null, SAVE_OK=null;
+
+/* preferenze di visualizzazione: ordinamenti e sezioni aperte o chiuse.
+   Stanno in una chiave separata, non finiscono nei backup dei dati. */
+var UI_KEY="rendi_ui";
+var UI={ ord:{campo:"def",verso:"desc"}, ordC:{campo:"def",verso:"desc"},
+         lista:true, grafici:true, listaC:true, graficiC:true, chart:{} };
+function caricaUI(){
+  try{
+    var raw=localStorage.getItem(UI_KEY);
+    if(raw){ var o=JSON.parse(raw);
+      if(o&&typeof o==="object"){
+        if(o.ord&&o.ord.campo)UI.ord=o.ord;
+        if(o.ordC&&o.ordC.campo)UI.ordC=o.ordC;
+        ["lista","grafici","listaC","graficiC"].forEach(function(k){ if(typeof o[k]==="boolean")UI[k]=o[k]; });
+        if(o.chart&&typeof o.chart==="object")UI.chart=o.chart;
+      }
+    }
+  }catch(e){}
+}
+function salvaUI(){ try{ localStorage.setItem(UI_KEY,JSON.stringify(UI)); }catch(e){} }
+
+/* criteri di ordinamento; "stelle" ha senso solo sui titoli in portafoglio */
+var CRITERI=[
+  {k:"def",   n:"Ordine di inserimento"},
+  {k:"nome",  n:"Nome"},
+  {k:"valore",n:"Valore attuale"},
+  {k:"resa",  n:"Resa effettiva (\u20ac)"},
+  {k:"nom",   n:"Rendimento nominale"},
+  {k:"nomtot",n:"Rend. nominale con cedole"},
+  {k:"stelle",n:"Valutazione"}
+];
+var CRITERI_C=[
+  {k:"def",   n:"Ordine di chiusura"},
+  {k:"nome",  n:"Nome"},
+  {k:"data",  n:"Data di vendita"},
+  {k:"valore",n:"Importo realizzato"},
+  {k:"resa",  n:"Resa effettiva (\u20ac)"},
+  {k:"nom",   n:"Rendimento nominale"},
+  {k:"nomtot",n:"Rend. nominale con cedole"}
+];
+function nomeCriterio(campo,chiusi){
+  var L=chiusi?CRITERI_C:CRITERI,r=null;
+  L.forEach(function(c){if(c.k===campo)r=c.n;});
+  return r||"Ordina";
+}
+/* ordina una lista di lotti secondo il criterio scelto */
+function ordina(lista,chiusi,stato,D){
+  if(stato.campo==="def") return lista;
+  var segno=stato.verso==="asc"?-1:1;
+  var val=function(p){
+    var m=metrics(p,chiusi);
+    switch(stato.campo){
+      case "valore": return m.value;
+      case "resa":   return m.resa;
+      case "nom":    return m.rendNom;
+      case "nomtot": return m.rendNomTot;
+      case "data":   return new Date(p.sellDate||p.buyDate||0).getTime();
+      case "stelle": var s=starsOf(m,D||dists()); return (s.price+s.resa+s.total)/3;
+      default: return 0;
+    }
+  };
+  var out=lista.slice();
+  if(stato.campo==="nome"){
+    out.sort(function(x,y){return nomeChiave(x.name)<nomeChiave(y.name)?-segno:nomeChiave(x.name)>nomeChiave(y.name)?segno:0;});
+  }else{
+    out.sort(function(x,y){return (val(y)-val(x))*segno;});
+  }
+  return out;
+}
 var REP={scope:"both",period:"all",from:"",to:""};
 var PF_MODE=null, PENDING=null;
+
+/* ============ acquisti multipli ============
+   Un titolo e' un blocco che puo' contenere piu' acquisti (lotti), ognuno con la
+   propria quantita', prezzo, data e cambio. I campi riassuntivi quantity, buyPrice,
+   buyDate e buyRate restano allineati come medie ponderate, cosi' il resto dell'app
+   continua a leggerli, ma tutto cio' che dipende dal tempo usa i singoli lotti. */
+function lottiDi(p){
+  if(p.lotti&&p.lotti.length) return p.lotti;
+  return [{q:p.quantity||0, prezzo:p.buyPrice||0, data:p.buyDate||today(), cambio:p.buyRate==null?1:p.buyRate}];
+}
+function investitoLotto(l){ return l.q*l.prezzo*(l.cambio==null?1:l.cambio); }
+/* riallinea i campi riassuntivi: prezzo medio ponderato per quantita',
+   cambio medio scelto in modo che quantita' x prezzo x cambio dia l'investito esatto */
+function ricalcola(p){
+  var L=lottiDi(p), q=0, spesaValuta=0, investito=0, prima=null;
+  L.forEach(function(l){
+    q+=l.q; spesaValuta+=l.q*l.prezzo; investito+=investitoLotto(l);
+    if(l.data && (prima===null || l.data<prima)) prima=l.data;
+  });
+  p.lotti=L;
+  p.quantity=q;
+  p.buyPrice=q>0?spesaValuta/q:0;
+  p.buyRate=(q>0&&p.buyPrice>0)?investito/(q*p.buyPrice):1;
+  p.buyDate=prima||today();
+  return p;
+}
+/* durata media di possesso, pesata sul capitale investito in ciascun acquisto */
+function anniPesati(p,fine){
+  var L=lottiDi(p), num=0, den=0;
+  L.forEach(function(l){
+    var inv=investitoLotto(l);
+    var y=Math.max(1/365.25,(fine-new Date(l.data))/86400000/365.25);
+    num+=inv*y; den+=inv;
+  });
+  if(den>0) return num/den;
+  return Math.max(1/365.25,(fine-new Date(p.buyDate))/86400000/365.25);
+}
+/* unita' che il blocco possedeva a una certa data: contano solo gli acquisti gia' avvenuti */
+function unitaAllaData(p,data){
+  var t=0;
+  lottiDi(p).forEach(function(l){ if(!data || !l.data || l.data<=data) t+=l.q; });
+  return t;
+}
+/* toglie q unita' in proporzione da tutti gli acquisti, restituendo i lotti staccati */
+function staccaQuota(p,q){
+  var L=lottiDi(p), tot=0; L.forEach(function(l){tot+=l.q;});
+  if(!(tot>0)) return {venduti:[],restanti:L};
+  var frazione=Math.min(1,q/tot), venduti=[], restanti=[];
+  L.forEach(function(l){
+    var presa=l.q*frazione;
+    if(presa>1e-9) venduti.push({q:presa,prezzo:l.prezzo,data:l.data,cambio:l.cambio});
+    var resta=l.q-presa;
+    if(resta>1e-9) restanti.push({q:resta,prezzo:l.prezzo,data:l.data,cambio:l.cambio});
+  });
+  return {venduti:venduti,restanti:restanti};
+}
 
 function blankStore(){var id=uid();return{portfolios:[{id:id,name:"Principale",positions:[],closed:[],dividends:[]}],rates:JSON.parse(JSON.stringify(DEFAULT_RATES)),activeId:id};}
 
@@ -209,7 +344,10 @@ function normalizeStore(obj){
     src={portfolios:[{id:uid(),name:"Principale",positions:obj.positions||[],closed:obj.closed||[],dividends:obj.dividends||[]}],rates:obj.rates,activeId:null};
   else return null;
   var portfolios=(src.portfolios||[]).map(function(p){
-    return{id:p.id||uid(),name:p.name||"Portafoglio",positions:p.positions||[],closed:p.closed||[],dividends:p.dividends||[]};});
+    var pf={id:p.id||uid(),name:p.name||"Portafoglio",positions:p.positions||[],closed:p.closed||[],dividends:p.dividends||[]};
+    /* i dati salvati prima degli acquisti multipli diventano blocchi con un solo acquisto */
+    pf.positions.forEach(ricalcola); pf.closed.forEach(ricalcola);
+    return pf;});
   if(!portfolios.length)portfolios=[{id:uid(),name:"Principale",positions:[],closed:[],dividends:[]}];
   var rates=Object.assign({},DEFAULT_RATES,src.rates||{});
   CURRENCIES.forEach(function(c){var v=num(rates[c]);rates[c]=v>0?v:DEFAULT_RATES[c];});
@@ -226,6 +364,7 @@ function load(){
   S=blankStore();
 }
 function save(){
+  scadeRip();
   try{
     var payload=JSON.stringify(S);
     localStorage.setItem(KEY,payload);
@@ -240,12 +379,51 @@ function active(){
 
 /* ============ calcolo ============ */
 function fx(c){var v=S.rates[c];return v==null?1:v;}
-function incomeFor(name){
-  var A=active(),key=String(name||"").trim().toLowerCase(),t=0;
-  A.dividends.forEach(function(d){
-    if(String(d.name||"").trim().toLowerCase()===key)t+=d.amount*(d.rate==null?fx(d.currency):d.rate);});
-  return t;
+function nomeChiave(x){return String(x||"").trim().toLowerCase();}
+function valoreDiv(d){return d.amount*(d.rate==null?fx(d.currency):d.rate);}
+function chiaveLotto(p,chiuso){return (chiuso?"c":"o")+p.id;}
+
+/* Ripartizione dei dividendi fra i lotti.
+   Ogni incasso viene diviso fra i lotti dello stesso titolo che risultavano
+   posseduti alla data in cui e' maturato, in proporzione alle unita' di ciascuno.
+   Cosi' vendendo una parte del titolo, la quota corrispondente di cedole segue
+   le unita' vendute e il resto continua a maturare su quelle rimaste. */
+function elencoLotti(){
+  var A=active(), lotti=[];
+  A.positions.forEach(function(p){lotti.push({k:chiaveLotto(p,false),r:p,chiuso:false});});
+  A.closed.forEach(function(c){lotti.push({k:chiaveLotto(c,true),r:c,chiuso:true});});
+  return lotti;
 }
+/* come si divide un singolo incasso fra i lotti: restituisce chiave lotto -> euro */
+function quoteDi(d, lotti){
+  lotti=lotti||elencoLotti();
+  var nome=nomeChiave(d.name), val=valoreDiv(d), data=d.date||"", out={};
+  var idonei=lotti.filter(function(l){
+    if(nomeChiave(l.r.name)!==nome) return false;
+    if(l.chiuso && data && l.r.sellDate && l.r.sellDate<=data) return false; /* gia' venduto all'incasso */
+    return unitaAllaData(l.r,data)>0;   /* conta solo gli acquisti gia' avvenuti a quella data */
+  });
+  /* ripiego: se nessun lotto risulta posseduto a quella data (per esempio una data
+     inserita male), l'incasso non va perso ma si divide fra tutti i lotti del titolo */
+  if(!idonei.length) idonei=lotti.filter(function(l){return nomeChiave(l.r.name)===nome;});
+  var tot=0; idonei.forEach(function(l){tot+=unitaAllaData(l.r,data);});
+  if(!(tot>0)) return out;
+  idonei.forEach(function(l){out[l.k]=val*(unitaAllaData(l.r,data)/tot);});
+  return out;
+}
+function ripartizioneDividendi(){
+  var lotti=elencoLotti(), mappa={};
+  active().dividends.forEach(function(d){
+    var q=quoteDi(d,lotti);
+    Object.keys(q).forEach(function(k){mappa[k]=(mappa[k]||0)+q[k];});
+  });
+  return mappa;
+}
+var _rip=null;
+function rip(){ if(!_rip)_rip=ripartizioneDividendi(); return _rip; }
+function scadeRip(){ _rip=null; }
+function incomeLotto(p,chiuso){ var m=rip(); return m[chiaveLotto(p,chiuso)]||0; }
+
 function metrics(p,closed){
   var price=closed?p.sellPrice:p.currentPrice;
   var endRate=closed?(p.sellRate==null?fx(p.currency):p.sellRate):fx(p.currency);
@@ -254,8 +432,8 @@ function metrics(p,closed){
   var invested=p.quantity*p.buyPrice*buyRate;
   var value=p.quantity*price*endRate;
   var capGain=value-invested;
-  var income=incomeFor(p.name);
-  var years=Math.max(1/365.25,(end-new Date(p.buyDate))/86400000/365.25);
+  var income=incomeLotto(p,closed);
+  var years=anniPesati(p,end);
   var r=invested>0?capGain/invested:0;
   var rt=invested>0?(capGain+income)/invested:0;
   function tae(base,y){return base<=0?-100:(Math.pow(base,1/y)-1)*100;}
@@ -298,7 +476,7 @@ function badge(type){
 }
 
 /* ============ grafici SVG ============ */
-function donut(items,title){
+function donut(items,title,id){
   var tot=0;items.forEach(function(d){tot+=d.value;});
   if(!(tot>0))return"";
   var cx=90,cy=90,R=78,IR=48,a=-Math.PI/2,out="";
@@ -316,34 +494,65 @@ function donut(items,title){
   var leg=items.map(function(d){
     return '<div class="leg"><span class="dot" style="background:'+d.color+'"></span>'+esc(d.name)+
     ' \u00b7 '+Math.round(d.value/tot*100)+'% \u00b7 <span class="num">'+fmt(d.value)+'</span></div>';}).join("");
-  return '<div class="chartcard"><div class="chart-title">'+esc(title)+'</div>'+
-  '<svg viewBox="0 0 180 180" width="100%" height="190" preserveAspectRatio="xMidYMid meet">'+out+'</svg>'+
-  '<div class="legend">'+leg+'</div></div>';
+  return scheda(id, title,
+    '<svg viewBox="0 0 180 180" width="100%" height="190" preserveAspectRatio="xMidYMid meet">'+out+'</svg>'+
+    '<div class="legend">'+leg+'</div>');
 }
 
-function bars(items,unit,title){
+/* Barre sovrapposte: ogni voce ha due componenti, la parte di prezzo (a) e le cedole (b).
+   Se b manca, la barra resta a un solo colore come prima. */
+function bars(items,unit,title,id){
   if(!items.length)return"";
+  var dueParti=items.some(function(d){return Math.abs(d.b||0)>0.0001;});
   var LW=100,W=340,rowH=34,H=items.length*rowH+14,BW=W-LW-6;
-  var maxAbs=0;items.forEach(function(d){maxAbs=Math.max(maxAbs,Math.abs(d.value));});
+  var estremo=function(d){
+    var a=d.a||0,b=d.b||0;
+    return Math.max(Math.abs(a), Math.abs(a>0?a+b:b), Math.abs(a+b));
+  };
+  var maxAbs=0;items.forEach(function(d){maxAbs=Math.max(maxAbs,estremo(d));});
   if(!(maxAbs>0))maxAbs=1;
-  var hasNeg=items.some(function(d){return d.value<0;});
-  var zero=hasNeg?LW+BW/2:LW, scale=(hasNeg?BW/2:BW)/maxAbs*0.8;
+  var hasNeg=items.some(function(d){return (d.a||0)<0;});
+  var zero=hasNeg?LW+BW/2:LW, scale=(hasNeg?BW/2:BW)/maxAbs*0.78;
   var out='<line x1="'+zero+'" y1="4" x2="'+zero+'" y2="'+(H-8)+'" stroke="#2A3341" stroke-width="1"/>';
   items.forEach(function(d,i){
-    var y=8+i*rowH, w=Math.abs(d.value)*scale, neg=d.value<0;
-    var x=neg?zero-w:zero, col=neg?"#DC7A6B":"#4FB286";
+    var a=d.a||0, b=d.b||0, tot=a+b;
+    var y=8+i*rowH;
     var lbl=d.name.length>15?d.name.slice(0,14)+"\u2026":d.name;
-    var val=unit==="pct"?pct(d.value):fmtSigned(d.value);
     out+='<text x="'+(LW-8)+'" y="'+(y+12)+'" text-anchor="end" font-size="10.5" fill="#8B94A6">'+esc(lbl)+'</text>';
-    out+='<rect x="'+n2(x)+'" y="'+y+'" width="'+n2(Math.max(w,1.5))+'" height="16" rx="3" fill="'+col+'"/>';
-    out+='<text x="'+n2(neg?x-5:x+w+5)+'" y="'+(y+12)+'" text-anchor="'+(neg?"end":"start")+
-    '" font-size="9.5" fill="'+col+'" font-family="ui-monospace,Menlo,monospace">'+esc(val)+'</text>';
+    var destra=zero, sinistra=zero;   /* i due fronti da cui far crescere i segmenti */
+    function segmento(v,colore){
+      if(Math.abs(v)<0.0001) return;
+      var w=Math.abs(v)*scale, x;
+      if(v<0){ sinistra-=w; x=sinistra; } else { x=destra; destra+=w; }
+      out+='<rect x="'+n2(x)+'" y="'+y+'" width="'+n2(Math.max(w,1.5))+'" height="16" rx="2.5" fill="'+colore+'"/>';
+    }
+    segmento(a, a<0?"#DC7A6B":"#4FB286");
+    if(dueParti) segmento(b, "#C9A24B");
+    var val=unit==="pct"?pct(tot):fmtSigned(tot);
+    var fine=tot<0?sinistra:destra, ancora=tot<0?"end":"start";
+    out+='<text x="'+n2(tot<0?fine-5:fine+5)+'" y="'+(y+12)+'" text-anchor="'+ancora+
+    '" font-size="9.5" fill="'+(tot>=0?"#4FB286":"#DC7A6B")+'" font-family="ui-monospace,Menlo,monospace">'+esc(val)+'</text>';
   });
-  return '<div class="chartcard"><div class="chart-title">'+esc(title)+'</div>'+
-  '<svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet">'+out+'</svg></div>';
+  var legenda = dueParti ? '<div class="legend">'+
+    '<div class="leg"><span class="dot" style="background:#4FB286"></span>plusvalenza</div>'+
+    '<div class="leg"><span class="dot" style="background:#DC7A6B"></span>minusvalenza</div>'+
+    '<div class="leg"><span class="dot" style="background:#C9A24B"></span>cedole e dividendi</div></div>' : "";
+  return scheda(id, title,
+    '<svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet">'+out+'</svg>'+legenda);
 }
 
-function radar(items,unit,title){
+/* contenitore di un grafico, richiudibile toccando il titolo */
+function scheda(id, titolo, contenuto){
+  var chiuso = id ? UI.chart[id] : false;
+  return '<div class="chartcard">'+
+    '<div class="chart-head"'+(id?' data-act="toggleChart" data-v="'+id+'"':'')+'>'+
+      '<div class="chart-title">'+esc(titolo)+'</div>'+
+      (id?'<span class="chev'+(chiuso?"":" giu")+'">'+ic("chevron",15)+'</span>':'')+
+    '</div>'+
+    (chiuso?'':contenuto)+'</div>';
+}
+
+function radar(items,unit,title,id){
   var N=items.length;
   if(N<3)return"";
   var cx=110,cy=112,R=72,out="";
@@ -366,8 +575,8 @@ function radar(items,unit,title){
     var pv=pt(k,rr(items[k].value));
     out+='<circle cx="'+pv[0]+'" cy="'+pv[1]+'" r="2.6" fill="#C9A24B"/>';
   }
-  return '<div class="chartcard"><div class="chart-title">'+esc(title)+'</div>'+
-  '<svg viewBox="0 0 220 232" width="100%" preserveAspectRatio="xMidYMid meet">'+out+'</svg></div>';
+  return scheda(id, title,
+    '<svg viewBox="0 0 220 232" width="100%" preserveAspectRatio="xMidYMid meet">'+out+'</svg>');
 }
 
 /* ============ schermate ============ */
@@ -381,7 +590,7 @@ function val3(a,st){
 
 function screenAtt(){
   var A=active(),D=dists(),agg=aggregate(A.positions,false);
-  var divTot=0;A.dividends.forEach(function(d){divTot+=d.amount*(d.rate==null?fx(d.currency):d.rate);});
+  var divTot=0;A.dividends.forEach(function(d){divTot+=valoreDiv(d);});
   var pstars=null;
   if(A.positions.length){
     var arr=A.positions.map(function(p){return starsOf(metrics(p,false),D);});
@@ -391,26 +600,31 @@ function screenAtt(){
   '<div class="sum-value num">'+fmt(agg.val)+'</div>'+
   '<div class="sum-chip num" style="color:'+upc(agg.cap)+'">'+ic("trend",15)+' '+fmtSigned(agg.cap)+' \u00b7 '+pct(agg.rendNom)+'</div>'+
   '<div class="ledger">'+row("Importo investito",fmt(agg.inv))+
-  row("Cedole e dividendi maturati",fmt(divTot),"var(--up)")+
+  row("Cedole e dividendi sui titoli in corso",fmt(agg.inc),"var(--up)")+
   row("Rend. nominale con cedole/div.",pct(agg.rendNomTot),upc(agg.rendNomTot))+'</div>'+
   val3(agg,pstars)+'</div>';
 
-  h+='<div class="sec-label">'+ic("wallet",13)+' Titoli in portafoglio'+
-  (A.positions.length>1?'<button class="sortbtn'+(SORT!=="def"?" on":"")+'" data-act="sort">'+ic("sort",12)+
-  (SORT==="resaDesc"?"Resa \u2193":SORT==="resaAsc"?"Resa \u2191":"Ordina")+'</button>':"")+'</div>';
+  /* intestazione della lista: si richiude toccandola, e apre il pannello di ordinamento */
+  h+='<div class="sec-label"><span class="sec-toggle" data-act="toggleSez" data-v="lista">'+ic("wallet",13)+
+  ' Titoli in portafoglio <span class="sec-count">('+A.positions.length+')</span>'+
+  '<span class="chev'+(UI.lista?" giu":"")+'">'+ic("chevron",14)+'</span></span>'+
+  (A.positions.length>1?'<button class="sortbtn'+(UI.ord.campo!=="def"?" on":"")+'" data-act="apriOrd" data-v="att">'+ic("sort",12)+
+  nomeCriterio(UI.ord.campo,false)+(UI.ord.campo!=="def"?(UI.ord.verso==="asc"?" \u2191":" \u2193"):"")+'</button>':"")+'</div>';
 
-  var list=A.positions.slice();
-  if(SORT!=="def")list.sort(function(x,y){var d=metrics(y,false).resa-metrics(x,false).resa;return SORT==="resaAsc"?-d:d;});
-
-  if(!list.length){
+  if(!A.positions.length){
     h+='<div class="empty">'+ic("wallet",34)+'<div>Nessun titolo ancora.<br>Tocca + per aggiungere il primo.</div></div>';
-  }else{
-    list.forEach(function(p){
+  }else if(UI.lista){
+    ordina(A.positions,false,UI.ord,D).forEach(function(p){
       var m=metrics(p,false),st=starsOf(m,D);
+      var peso=agg.val>0?(m.value/agg.val*100):0;
       h+='<div class="card" data-act="openPos" data-id="'+p.id+'"><div class="card-top"><div><span class="name">'+esc(p.name)+'</span>'+
       badge(p.type)+(p.currency!=="EUR"?'<span class="ccy">'+esc(p.currency)+'</span>':"")+'</div>'+
-      '<div class="card-val num">'+fmt(m.value)+'</div></div>'+
-      '<div class="card-sub">'+stars(st.total)+'<span class="chip num" style="color:'+upc(m.resa)+'">'+fmtSigned(m.resa)+'</span></div></div>';
+      '<div><div class="card-val num">'+fmt(m.value)+'</div>'+
+      '<div class="card-peso num">'+peso.toFixed(1)+'% del totale</div></div></div>'+
+      '<div class="card-sub">'+stars(st.total)+
+      '<span class="chip num" style="color:'+upc(m.resa)+'">'+fmtSigned(m.resa)+
+      (lottiDi(p).length>1?'<span style="color:var(--muted);font-weight:500"> \u00b7 '+lottiDi(p).length+' acquisti</span>':"")+
+      '</span></div></div>';
     });
   }
 
@@ -420,19 +634,36 @@ function screenAtt(){
     var comp=Object.keys(byType).filter(function(k){return byType[k]>0;}).map(function(k){return{name:k,value:byType[k],color:TYPE_COLORS[k]||"#8B94A6"};});
     var g={};
     A.positions.forEach(function(p){var m=metrics(p,false);(g[p.type]=g[p.type]||[]).push(m);});
-    var catRet=Object.keys(g).map(function(k){return{name:k,value:n2(mean(g[k].map(function(m){return m.rendNomTot;})))};});
-    var catResa=Object.keys(g).map(function(k){return{name:k,value:Math.round(g[k].reduce(function(s,m){return s+m.resa;},0))};});
-    var catResaAvg=Object.keys(g).map(function(k){return{name:k,value:Math.round(mean(g[k].map(function(m){return m.resa;})))};});
-    var perTitleRet=A.positions.map(function(p){return{name:p.name,value:n2(metrics(p,false).rendNomTot)};});
-    var perTitleResa=A.positions.map(function(p){return{name:p.name,value:Math.round(metrics(p,false).resa)};});
-    h+='<div class="sec-label">'+ic("pie",13)+' Grafici \u00b7 portafoglio attuale</div>';
-    h+=donut(comp,"Composizione per tipo");
-    h+=radar(catRet,"pct","Rendimento compr. medio per categoria (%)");
-    h+=bars(catRet,"pct","Rendimento compr. medio per categoria (%)");
-    h+=radar(catResa,"eur","Resa effettiva per categoria (\u20ac)");
-    h+=bars(catResaAvg,"eur","Resa media per categoria (\u20ac)");
-    h+=bars(perTitleRet,"pct","Rendimento compr. di cedole/div. per titolo (%)");
-    h+=bars(perTitleResa,"eur","Resa economica per titolo (\u20ac)");
+    /* per ogni categoria le due componenti separate: prezzo e cedole */
+    var catRet=Object.keys(g).map(function(k){
+      return{name:k, a:n2(mean(g[k].map(function(m){return m.rendNom;}))),
+                     b:n2(mean(g[k].map(function(m){return m.invested>0?m.income/m.invested*100:0;})))};});
+    var catResaTot=Object.keys(g).map(function(k){
+      return{name:k, a:Math.round(g[k].reduce(function(s,m){return s+m.capGain;},0)),
+                     b:Math.round(g[k].reduce(function(s,m){return s+m.income;},0))};});
+    var catResaAvg=Object.keys(g).map(function(k){
+      return{name:k, a:Math.round(mean(g[k].map(function(m){return m.capGain;}))),
+                     b:Math.round(mean(g[k].map(function(m){return m.income;})))};});
+    var perTitleRet=A.positions.map(function(p){var m=metrics(p,false);
+      return{name:p.name, a:n2(m.rendNom), b:n2(m.invested>0?m.income/m.invested*100:0)};});
+    var perTitleResa=A.positions.map(function(p){var m=metrics(p,false);
+      return{name:p.name, a:Math.round(m.capGain), b:Math.round(m.income)};});
+    /* il radar resta a valore unico: mostra il rendimento complessivo */
+    var radRet=Object.keys(g).map(function(k){return{name:k,value:n2(mean(g[k].map(function(m){return m.rendNomTot;})))};});
+    var radResa=Object.keys(g).map(function(k){return{name:k,value:Math.round(g[k].reduce(function(s,m){return s+m.resa;},0))};});
+
+    h+='<div class="sec-label"><span class="sec-toggle" data-act="toggleSez" data-v="grafici">'+ic("pie",13)+
+      ' Grafici \u00b7 portafoglio attuale<span class="chev'+(UI.grafici?" giu":"")+'">'+ic("chevron",14)+'</span></span></div>';
+    if(UI.grafici){
+      h+=donut(comp,"Composizione per tipo","a-comp");
+      h+=radar(radRet,"pct","Rendimento compr. medio per categoria (%)","a-radret");
+      h+=bars(catRet,"pct","Rendimento medio per categoria (%)","a-catret");
+      h+=radar(radResa,"eur","Resa effettiva per categoria (\u20ac)","a-radresa");
+      h+=bars(catResaTot,"eur","Resa totale per categoria (\u20ac)","a-catresa");
+      h+=bars(catResaAvg,"eur","Resa media per categoria (\u20ac)","a-catresamed");
+      h+=bars(perTitleRet,"pct","Rendimento per titolo (%)","a-titret");
+      h+=bars(perTitleResa,"eur","Resa economica per titolo (\u20ac)","a-titresa");
+    }
   }
   return h;
 }
@@ -440,9 +671,15 @@ function screenAtt(){
 function screenDiv(){
   var A=active(),tot=0;
   A.dividends.forEach(function(d){tot+=d.amount*(d.rate==null?fx(d.currency):d.rate);});
+  var inCorso=0,realizzati=0;
+  A.positions.forEach(function(x){inCorso+=incomeLotto(x,false);});
+  A.closed.forEach(function(x){realizzati+=incomeLotto(x,true);});
   var h='<div class="summary"><div class="sum-label">Dividendi e cedole incassati</div>'+
   '<div class="sum-value num" style="color:var(--up)">'+fmt(tot)+'</div>'+
-  '<div class="sum-chip" style="color:var(--muted)">'+A.dividends.length+' incassi \u00b7 al cambio dell\'incasso</div></div>';
+  '<div class="sum-chip" style="color:var(--muted)">'+A.dividends.length+' incassi \u00b7 al cambio dell\'incasso</div>'+
+  ((inCorso>0||realizzati>0)?'<div class="ledger">'+
+    row("Maturati su titoli in portafoglio",fmt(inCorso),"var(--up)")+
+    row("Gi\u00e0 confluiti in vendite",fmt(realizzati),"var(--muted)")+'</div>':"")+'</div>';
   h+='<div class="sec-label">'+ic("coins",13)+' Storico incassi</div>';
   if(!A.dividends.length){
     h+='<div class="empty">'+ic("coins",34)+'<div>Nessun dividendo registrato.<br>Aprilo da un titolo o col tasto +.</div></div>';
@@ -464,22 +701,40 @@ function screenHist(){
   '<div class="sum-value num" style="color:'+upc(agg.resa)+'">'+fmtSigned(agg.resa)+'</div>'+
   '<div class="sum-chip" style="color:var(--muted)">'+A.closed.length+' posizioni chiuse</div>'+
   (A.closed.length?val3(agg,null):"")+'</div>';
-  h+='<div class="sec-label">'+ic("history",13)+' Investimenti conclusi</div>';
+  h+='<div class="sec-label"><span class="sec-toggle" data-act="toggleSez" data-v="listaC">'+ic("history",13)+
+  ' Investimenti conclusi <span class="sec-count">('+A.closed.length+')</span>'+
+  '<span class="chev'+(UI.listaC?" giu":"")+'">'+ic("chevron",14)+'</span></span>'+
+  (A.closed.length>1?'<button class="sortbtn'+(UI.ordC.campo!=="def"?" on":"")+'" data-act="apriOrd" data-v="hist">'+ic("sort",12)+
+  nomeCriterio(UI.ordC.campo,true)+(UI.ordC.campo!=="def"?(UI.ordC.verso==="asc"?" \u2191":" \u2193"):"")+'</button>':"")+'</div>';
+
   if(!A.closed.length){
     h+='<div class="empty">'+ic("history",34)+'<div>Ancora nessuna posizione chiusa.<br>Vendi un titolo per vederlo qui.</div></div>';
-  }else{
-    A.closed.forEach(function(c){
+  }else if(UI.listaC){
+    ordina(A.closed,true,UI.ordC,null).forEach(function(c){
       var m=metrics(c,true);
       h+='<div class="card" data-act="openClosed" data-id="'+c.id+'"><div class="card-top"><div><span class="name">'+esc(c.name)+'</span>'+
       badge(c.type)+'</div><div class="card-val num" style="color:'+upc(m.resa)+'">'+fmtSigned(m.resa)+'</div></div>'+
-      '<div class="card-sub"><span class="num">ann. '+pct(m.annTae)+'</span><span>'+dLabel(c.buyDate)+' \u2013 '+dLabel(c.sellDate)+'</span></div></div>';
+      '<div class="card-sub"><span class="num">'+c.quantity+' unit\u00e0 \u00b7 ann. '+pct(m.annTae)+'</span><span>'+dLabel(c.buyDate)+' \u2013 '+dLabel(c.sellDate)+'</span></div></div>';
     });
+  }
+  if(A.closed.length){
     var byType={};
     A.closed.forEach(function(c){byType[c.type]=(byType[c.type]||0)+metrics(c,true).value;});
     var comp=Object.keys(byType).filter(function(k){return byType[k]>0;}).map(function(k){return{name:k,value:byType[k],color:TYPE_COLORS[k]||"#8B94A6"};});
-    h+='<div class="sec-label">'+ic("pie",13)+' Grafici \u00b7 portafoglio storico</div>';
-    h+=donut(comp,"Composizione per tipo");
-    h+=bars(A.closed.map(function(c){return{name:c.name,value:Math.round(metrics(c,true).resa)};}),"eur","Resa realizzata per titolo (\u20ac)");
+    var perTit=A.closed.map(function(c){var m=metrics(c,true);
+      return{name:c.name, a:Math.round(m.capGain), b:Math.round(m.income)};});
+    var gc={};
+    A.closed.forEach(function(c){var m=metrics(c,true);(gc[c.type]=gc[c.type]||[]).push(m);});
+    var catC=Object.keys(gc).map(function(k){
+      return{name:k, a:Math.round(gc[k].reduce(function(s,m){return s+m.capGain;},0)),
+                     b:Math.round(gc[k].reduce(function(s,m){return s+m.income;},0))};});
+    h+='<div class="sec-label"><span class="sec-toggle" data-act="toggleSez" data-v="graficiC">'+ic("pie",13)+
+      ' Grafici \u00b7 portafoglio storico<span class="chev'+(UI.graficiC?" giu":"")+'">'+ic("chevron",14)+'</span></span></div>';
+    if(UI.graficiC){
+      h+=donut(comp,"Composizione per tipo","s-comp");
+      h+=bars(catC,"eur","Resa realizzata per categoria (\u20ac)","s-cat");
+      h+=bars(perTit,"eur","Resa realizzata per titolo (\u20ac)","s-tit");
+    }
   }
   return h;
 }
@@ -500,17 +755,27 @@ function screenRep(){
   var invested=0,curVal=0,plus=0,income=0,resa=0,count=0,catResa={};
   if(useOpen)A.positions.filter(function(p){return inRange(p.buyDate,pFrom,pTo);}).forEach(function(p){
     var m=metrics(p,false);invested+=m.invested;curVal+=m.value;plus+=m.capGain;resa+=m.capGain;count++;
-    catResa[p.type]=(catResa[p.type]||0)+m.capGain;});
+    catResa[p.type]=catResa[p.type]||{a:0,b:0}; catResa[p.type].a+=m.capGain;});
   if(useClosed)A.closed.filter(function(c){return inRange(c.sellDate,pFrom,pTo);}).forEach(function(c){
     var m=metrics(c,true);invested+=m.invested;curVal+=m.value;plus+=m.capGain;resa+=m.capGain;count++;
-    catResa[c.type]=(catResa[c.type]||0)+m.capGain;});
-  var relNames={};
-  (useOpen?A.positions:[]).concat(useClosed?A.closed:[]).forEach(function(x){relNames[String(x.name).trim().toLowerCase()]=1;});
+    catResa[c.type]=catResa[c.type]||{a:0,b:0}; catResa[c.type].a+=m.capGain;});
+  var inScope={};
+  if(useOpen)A.positions.filter(function(x){return inRange(x.buyDate,pFrom,pTo);}).forEach(function(x){inScope[chiaveLotto(x,false)]=1;});
+  if(useClosed)A.closed.filter(function(x){return inRange(x.sellDate,pFrom,pTo);}).forEach(function(x){inScope[chiaveLotto(x,true)]=1;});
+  var lottiRep=elencoLotti(), tipoLotto={};
+  lottiRep.forEach(function(l){tipoLotto[l.k]=l.r.type;});
   A.dividends.filter(function(x){return inRange(x.date,pFrom,pTo);}).forEach(function(x){
-    if(relNames[String(x.name).trim().toLowerCase()]||REP.scope==="both"){
-      var v=x.amount*(x.rate==null?1:x.rate);income+=v;resa+=v;}});
+    /* di ogni incasso conta solo la parte attribuita ai lotti compresi nel periodo e nella vista */
+    var q=quoteDi(x,lottiRep), v=0;
+    Object.keys(q).forEach(function(k){
+      if(!inScope[k])return;
+      v+=q[k];
+      var t=tipoLotto[k]; if(t){ catResa[t]=catResa[t]||{a:0,b:0}; catResa[t].b+=q[k]; }
+    });
+    income+=v;resa+=v;});
   var totRet=invested>0?(plus+income)/invested*100:0;
-  var catRows=Object.keys(catResa).filter(function(k){return k;}).map(function(k){return{name:k,value:Math.round(catResa[k])};});
+  var catRows=Object.keys(catResa).filter(function(k){return k;}).map(function(k){
+    return{name:k, a:Math.round(catResa[k].a), b:Math.round(catResa[k].b)};});
 
   var h='<div class="seg">'+
   [["att","Attuale"],["hist","Storico"],["both","Entrambi"]].map(function(o){
@@ -529,13 +794,15 @@ function screenRep(){
   '<div class="ledger">'+row("Capitale investito",fmt(invested))+row("Valore / incassato",fmt(curVal))+
   row("Plus / minusvalenza",fmtSigned(plus),upc(plus))+row("Cedole e dividendi",fmt(income),"var(--up)")+'</div></div>';
   if(catRows.length){
-    h+='<div class="sec-label">'+ic("pie",13)+' Resa per categoria</div>'+bars(catRows,"eur","Resa del periodo per categoria (\u20ac)");
+    h+='<div class="sec-label">'+ic("pie",13)+' Resa per categoria</div>'+bars(catRows,"eur","Resa del periodo per categoria (\u20ac)","r-cat");
   }
   return h;
 }
 
 /* ============ render principale ============ */
 function render(){
+  scadeRip();
+  if(MODAL&&MODAL.kind==="pos"&&!findPos(MODAL.id))MODAL=null;
   var A=active();
   var h='<div class="head"><div>'+
   '<button class="pf-switch" data-act="openPf"><span>'+esc(A.name)+'</span>'+ic("chevron",14)+'</button>'+
@@ -582,10 +849,32 @@ function findPos(id){var A=active(),r=null;A.positions.forEach(function(p){if(p.
 function findClosed(id){var A=active(),r=null;A.closed.forEach(function(p){if(p.id===id)r=p;});return r;}
 function findDiv(id){var A=active(),r=null;A.dividends.forEach(function(p){if(p.id===id)r=p;});return r;}
 
-function detailRows(m,st){
+/* gli acquisti che compongono il titolo, con la loro durata e il loro peso */
+function elencoAcquisti(p){
+  var L=lottiDi(p); if(!L.length) return "";
+  var oggi=new Date(), inv=0;
+  L.forEach(function(l){inv+=investitoLotto(l);});
+  var righe=L.slice().sort(function(a,b){return (a.data||"")<(b.data||"")?-1:1;}).map(function(l,i){
+    var q=investitoLotto(l);
+    var anni=Math.max(1/365.25,(oggi-new Date(l.data))/86400000/365.25);
+    var idx=lottiDi(p).indexOf(l);
+    return '<div class="acq" data-act="apriAcq" data-id="'+p.id+'" data-v="'+idx+'">'+
+      '<div class="acq-top"><span class="num">'+(Math.round(l.q*1e6)/1e6)+' unit\u00e0 a '+l.prezzo+' '+esc(p.currency)+'</span>'+
+      '<span class="num" style="color:var(--muted)">'+fmt(q)+'</span></div>'+
+      '<div class="acq-sub"><span>'+dLabel(l.data)+' \u00b7 da '+(anni<1?Math.round(anni*365.25)+" giorni":anni.toFixed(1)+" anni")+'</span>'+
+      '<span>'+(inv>0?Math.round(q/inv*100):0)+'% del capitale</span></div></div>';
+  }).join("");
+  return '<div class="sec-label" style="margin:20px 4px 8px">'+ic("layers",13)+' Acquisti ('+L.length+')'+
+    '<button class="sortbtn" data-act="nuovoAcq" data-id="'+p.id+'">'+ic("plus",12)+'Aggiungi</button></div>'+righe+
+    (L.length>1?'<div class="hint">Prezzo di carico medio '+(Math.round(p.buyPrice*1e4)/1e4)+' '+esc(p.currency)+
+      '. I rendimenti annualizzati e le stelle pesano ogni acquisto per il capitale e per il tempo in cui l\'hai tenuto.</div>':"")+
+    '<div style="height:1px;background:var(--line);margin:14px 0"></div>';
+}
+function detailRows(m,st,peso){
   return '<div class="ledger">'+
   row("Importo investito",fmt(m.invested))+
   row("Valore attuale",fmt(m.value))+
+  (peso!=null?row("Peso nel portafoglio",peso.toFixed(1)+"%","var(--brass)"):"")+
   row("Plus / minusvalenza",fmtSigned(m.capGain),upc(m.capGain))+
   row("Rendimento nominale",pct(m.rendNom),upc(m.rendNom))+
   row("Cedole e dividendi maturati",fmt(m.income),"var(--up)")+
@@ -622,9 +911,12 @@ function renderModal(){
   else if(k==="pos"){
     var p=findPos(MODAL.id);if(!p){MODAL=null;root.innerHTML="";return;}
     var m=metrics(p,false),st=starsOf(m,dists());
+    var tot=aggregate(active().positions,false).val;
+    var peso=tot>0?(m.value/tot*100):0;
     h=sheetHead(esc(p.name)+badge(p.type),p.quantity+" unit\u00e0 \u00b7 acquisto "+p.buyPrice+" "+esc(p.currency)+" \u00b7 "+dLabel(p.buyDate))+
     '<div style="display:flex;justify-content:flex-end;margin-bottom:-4px"><button class="starbtn" data-act="openLegend">'+ic("info",14)+' Legenda stelle</button></div>'+
-    detailRows(m,st)+
+    detailRows(m,st,peso)+
+    elencoAcquisti(p)+
     '<div class="actions" style="margin-top:16px">'+
     '<button class="act" data-act="posPrice" data-id="'+p.id+'">'+ic("refresh",19)+' Aggiorna prezzo attuale</button>'+
     '<button class="act" data-act="posDiv" data-id="'+p.id+'">'+ic("coins",19)+' Registra dividendo / cedola</button>'+
@@ -654,13 +946,19 @@ function renderModal(){
   }
   else if(k==="sell"){
     var ps=findPos(MODAL.id),fo=ps.currency!=="EUR";
-    h=sheetHead("Vendi / chiudi",esc(ps.name)+" \u00b7 "+ps.quantity+" unit\u00e0")+
-    '<div class="row2"><div class="field"><label class="label">Prezzo vendita ('+esc(ps.currency)+')</label>'+
-    '<input class="input num" inputmode="decimal" id="s_price" value="'+esc(ps.currentPrice)+'" data-act="sellCalc"></div>'+
-    '<div class="field"><label class="label">Data</label><input class="input" type="date" id="s_date" value="'+today()+'"></div></div>'+
-    (fo?'<div class="field"><label class="label">Cambio alla vendita (1 '+esc(ps.currency)+' = \u20ac)</label>'+
-    '<input class="input num" inputmode="decimal" id="s_rate" value="'+(S.rates[ps.currency]||1)+'" data-act="sellCalc"></div>':"")+
+    h=sheetHead("Vendi / chiudi",esc(ps.name)+" \u00b7 "+ps.quantity+" unit\u00e0 in portafoglio")+
+    '<div class="row2"><div class="field"><label class="label">Quantit\u00e0 da vendere</label>'+
+    '<input class="input num" inputmode="decimal" id="s_qty" value="'+esc(ps.quantity)+'" data-act="sellCalc"></div>'+
+    '<div class="field"><label class="label">Prezzo vendita ('+esc(ps.currency)+')</label>'+
+    '<input class="input num" inputmode="decimal" id="s_price" value="'+esc(ps.currentPrice)+'" data-act="sellCalc"></div></div>'+
+    '<div style="margin:-6px 2px 12px"><button class="starbtn" data-act="sellTutto" data-id="'+ps.id+'">Vendi tutte le '+ps.quantity+'</button></div>'+
+    '<div class="row2"><div class="field"><label class="label">Data</label>'+
+    '<input class="input" type="date" id="s_date" value="'+today()+'"></div>'+
+    (fo?'<div class="field"><label class="label">Cambio (1 '+esc(ps.currency)+' = \u20ac)</label>'+
+    '<input class="input num" inputmode="decimal" id="s_rate" value="'+(S.rates[ps.currency]||1)+'" data-act="sellCalc"></div>':"<div class=\"field\"></div>")+'</div>'+
     '<div class="lrow head-row"><span class="lk">Plus/minus in euro</span><span class="lv num" id="s_res">\u2014</span></div>'+
+    '<div class="lrow"><span class="lk">Cedole che seguono la vendita</span><span class="lv num" id="s_div">\u2014</span></div>'+
+    '<div class="lrow"><span class="lk">Dopo la vendita restano</span><span class="lv num" id="s_resta">\u2014</span></div>'+
     '<button class="btn btn-primary" data-act="saveSell" data-id="'+ps.id+'">Registra vendita</button>';
   }
   else if(k==="addDiv"||k==="posDiv"){
@@ -688,6 +986,39 @@ function renderModal(){
       '<input class="input num" inputmode="decimal" id="r_'+c+'" value="'+S.rates[c]+'"><div style="color:var(--muted);font-size:13px">\u20ac</div></div>';}).join("")+
     '<div class="hint">Il cambio di acquisto, vendita e incasso dividendi lo inserisci invece al momento di ogni operazione: resta fissato a quel valore.</div>'+
     '<button class="btn btn-primary" data-act="saveRates">Salva cambi</button>';
+  }
+  else if(k==="acq"){
+    var pa=findPos(MODAL.id); if(!pa){MODAL=null;root.innerHTML="";return;}
+    var idx=MODAL.v, nuovoAcq=(idx===-1);
+    var l=nuovoAcq?{q:"",prezzo:"",data:today(),cambio:S.rates[pa.currency]||1}:lottiDi(pa)[idx];
+    if(!l){MODAL=null;root.innerHTML="";return;}
+    var fo=pa.currency!=="EUR";
+    h=sheetHead(nuovoAcq?"Nuovo acquisto":"Modifica acquisto",esc(pa.name))+
+    '<div class="row2"><div class="field"><label class="label">Quantit\u00e0</label>'+
+    '<input class="input num" inputmode="decimal" id="q_qty" value="'+esc(l.q)+'" placeholder="10"></div>'+
+    '<div class="field"><label class="label">Prezzo ('+esc(pa.currency)+')</label>'+
+    '<input class="input num" inputmode="decimal" id="q_prezzo" value="'+esc(l.prezzo)+'" placeholder="100"></div></div>'+
+    '<div class="row2"><div class="field"><label class="label">Data acquisto</label>'+
+    '<input class="input" type="date" id="q_data" value="'+esc(l.data||today())+'"></div>'+
+    (fo?'<div class="field"><label class="label">Cambio (1 '+esc(pa.currency)+' = \u20ac)</label>'+
+    '<input class="input num" inputmode="decimal" id="q_cambio" value="'+esc(l.cambio==null?1:l.cambio)+'"></div>':'<div class="field"></div>')+'</div>'+
+    '<button class="btn btn-primary" data-act="salvaAcq" data-id="'+pa.id+'" data-v="'+idx+'">Salva</button>'+
+    (nuovoAcq||lottiDi(pa).length<2?"":
+      '<button class="btn btn-danger" data-act="eliminaAcq" data-id="'+pa.id+'" data-v="'+idx+'">Elimina questo acquisto</button>')+
+    (nuovoAcq?"":'<div class="hint" style="margin-top:10px">Per togliere unit\u00e0 vendendole usa invece Vendi, cos\u00ec l\'operazione finisce nello storico.</div>');
+  }
+  else if(k==="ord"){
+    var chiusi=MODAL.id==="hist", stato=chiusi?UI.ordC:UI.ord, L=chiusi?CRITERI_C:CRITERI;
+    h=sheetHead("Ordina i titoli", chiusi?"Investimenti conclusi":"Titoli in portafoglio")+
+    L.map(function(c){
+      var on=stato.campo===c.k;
+      return '<div class="pf-row"><button class="pf-name" data-act="setOrd" data-id="'+MODAL.id+'" data-v="'+c.k+'">'+
+        (on?ic("check",16):'<span style="width:16px;display:inline-block"></span>')+
+        '<span>'+c.n+'</span>'+
+        (on&&c.k!=="def"?'<span class="pf-count">'+(stato.verso==="asc"?"crescente \u2191":"decrescente \u2193")+'</span>':"")+
+        '</button></div>';
+    }).join("")+
+    '<div class="hint">Tocca il criterio gi\u00e0 attivo per invertire il verso.</div>';
   }
   else if(k==="legend"){
     var D=dists();
@@ -760,17 +1091,75 @@ function updateActive(fn){
 }
 function sellCalc(){
   var p=findPos(MODAL.id);if(!p)return;
+  var qEl=document.getElementById("s_qty");
+  var q=qEl?num(qEl.value):p.quantity;
+  var quota=p.quantity>0?Math.max(0,Math.min(1,q/p.quantity)):0;
   var pr=num(document.getElementById("s_price").value);
   var rEl=document.getElementById("s_rate");
   var rt=p.currency!=="EUR"?(rEl?num(rEl.value):1):1;
-  var v=(pr*rt-p.buyPrice*(p.buyRate==null?1:p.buyRate))*p.quantity;
+  var v=(pr*rt-p.buyPrice*(p.buyRate==null?1:p.buyRate))*q;
   var el=document.getElementById("s_res");
   if(el){el.textContent=fmtSigned(v);el.style.color=upc(v);}
+  /* quota di cedole gia' maturate che segue le unita' vendute */
+  var ced=incomeLotto(p,false)*quota;
+  var dEl=document.getElementById("s_div");
+  if(dEl){dEl.textContent=fmt(ced);dEl.style.color="var(--up)";}
+  var resta=p.quantity-q;
+  var rEl2=document.getElementById("s_resta");
+  if(rEl2){
+    var ok=q>0&&resta>-1e-9;
+    rEl2.textContent=!ok?"quantit\u00e0 non valida":(resta<1e-9?"nessuna unit\u00e0, posizione chiusa":
+      (Math.round(resta*1e6)/1e6)+" unit\u00e0 in portafoglio");
+    rEl2.style.color=ok?"var(--muted)":"var(--down)";
+  }
 }
 
 var ACT={
   tab:function(d){TAB=d.v;render();},
-  sort:function(){SORT=SORT==="def"?"resaDesc":SORT==="resaDesc"?"resaAsc":"def";render();},
+  apriAcq:function(d){MODAL={kind:"acq",id:d.id,v:parseInt(d.v,10)};renderModal();},
+  nuovoAcq:function(d){MODAL={kind:"acq",id:d.id,v:-1};renderModal();},
+  salvaAcq:function(d){
+    var pa=findPos(d.id); if(!pa) return;
+    var idx=parseInt(d.v,10);
+    var q=num(document.getElementById("q_qty").value);
+    var prezzo=num(document.getElementById("q_prezzo").value);
+    if(!(q>0)){toast("La quantit\u00e0 deve essere maggiore di zero");return;}
+    var cEl=document.getElementById("q_cambio");
+    var lotto={q:q,prezzo:prezzo,data:document.getElementById("q_data").value||today(),
+      cambio:pa.currency!=="EUR"?(num(cEl&&cEl.value)||S.rates[pa.currency]||1):1};
+    updateActive(function(pf){
+      pf.positions=pf.positions.map(function(x){
+        if(x.id!==pa.id) return x;
+        var y=Object.assign({},x), L=lottiDi(x).slice();
+        if(idx===-1) L.push(lotto); else L[idx]=lotto;
+        y.lotti=L; return ricalcola(y);
+      });
+      return pf;});
+    MODAL={kind:"pos",id:pa.id}; render();
+    toast(idx===-1?"Acquisto aggiunto":"Acquisto aggiornato");
+  },
+  eliminaAcq:function(d){
+    var pa=findPos(d.id); if(!pa) return;
+    var idx=parseInt(d.v,10);
+    updateActive(function(pf){
+      pf.positions=pf.positions.map(function(x){
+        if(x.id!==pa.id) return x;
+        var y=Object.assign({},x), L=lottiDi(x).slice();
+        if(L.length<2) return x;
+        L.splice(idx,1); y.lotti=L; return ricalcola(y);
+      });
+      return pf;});
+    MODAL={kind:"pos",id:pa.id}; render(); toast("Acquisto eliminato");
+  },
+  apriOrd:function(d){MODAL={kind:"ord",id:d.v};renderModal();},
+  setOrd:function(d){
+    var chiusi=d.id==="hist", stato=chiusi?UI.ordC:UI.ord;
+    if(stato.campo===d.v && d.v!=="def"){ stato.verso = stato.verso==="desc"?"asc":"desc"; }
+    else { stato.campo=d.v; stato.verso="desc"; }
+    salvaUI(); MODAL=null; render();
+  },
+  toggleSez:function(d){ UI[d.v]=!UI[d.v]; salvaUI(); render(); },
+  toggleChart:function(d){ UI.chart[d.v]=!UI.chart[d.v]; salvaUI(); render(); },
   closeModal:function(){MODAL=null;PF_MODE=null;PENDING=null;renderModal();},
   openPf:function(){MODAL={kind:"pf"};PF_MODE=null;renderModal();},
   openLegend:function(){MODAL={kind:"legend"};renderModal();},
@@ -812,31 +1201,84 @@ var ACT={
     if(!(qty>0)){toast("La quantit\u00e0 deve essere maggiore di zero");return;}
     var ccy=document.getElementById("f_ccy").value;
     var rateEl=document.getElementById("f_rate");
-    var obj={name:name,ticker:document.getElementById("f_ticker").value.trim(),
-      type:document.getElementById("f_type").value,currency:ccy,quantity:qty,buyPrice:buy,
-      currentPrice:num(document.getElementById("f_cur").value)||buy,
-      buyDate:document.getElementById("f_date").value||today(),
-      buyRate:ccy!=="EUR"?(num(rateEl&&rateEl.value)||S.rates[ccy]||1):1};
-    if(d.id){updateActive(function(pf){pf.positions=pf.positions.map(function(x){return x.id===d.id?Object.assign({},x,obj):x;});return pf;});}
-    else{obj.id=uid();updateActive(function(pf){pf.positions=pf.positions.concat([obj]);return pf;});}
-    MODAL=null;render();toast(d.id?"Titolo aggiornato":"Titolo aggiunto");
+    var cambio=ccy!=="EUR"?(num(rateEl&&rateEl.value)||S.rates[ccy]||1):1;
+    var lotto={q:qty,prezzo:buy,data:document.getElementById("f_date").value||today(),cambio:cambio};
+    var prezzoOggi=num(document.getElementById("f_cur").value)||buy;
+    var tipo=document.getElementById("f_type").value;
+    var ticker=document.getElementById("f_ticker").value.trim();
+
+    if(d.id){   /* modifica dell'anagrafica: i lotti restano dove sono */
+      updateActive(function(pf){
+        pf.positions=pf.positions.map(function(x){
+          if(x.id!==d.id) return x;
+          var y=Object.assign({},x,{name:name,ticker:ticker,type:tipo,currency:ccy,currentPrice:prezzoOggi});
+          return ricalcola(y);
+        });
+        return pf;});
+      MODAL=null;render();toast("Titolo aggiornato");return;
+    }
+    /* nuovo acquisto: se il titolo c'e' gia', con la stessa valuta, confluisce nel blocco */
+    var esistente=null;
+    active().positions.forEach(function(x){
+      if(nomeChiave(x.name)===nomeChiave(name) && x.currency===ccy) esistente=x;
+    });
+    if(esistente){
+      updateActive(function(pf){
+        pf.positions=pf.positions.map(function(x){
+          if(x.id!==esistente.id) return x;
+          var y=Object.assign({},x,{currentPrice:prezzoOggi});
+          y.lotti=lottiDi(x).concat([lotto]);
+          return ricalcola(y);
+        });
+        return pf;});
+      MODAL=null;render();
+      toast("Aggiunte "+qty+" unit\u00e0 a "+name);
+      return;
+    }
+    var nuovo=ricalcola({id:uid(),name:name,ticker:ticker,type:tipo,currency:ccy,
+      currentPrice:prezzoOggi,lotti:[lotto]});
+    updateActive(function(pf){pf.positions=pf.positions.concat([nuovo]);return pf;});
+    MODAL=null;render();toast("Titolo aggiunto");
   },
   savePrice:function(d){
     var v=num(document.getElementById("f_price").value);
     updateActive(function(pf){pf.positions=pf.positions.map(function(x){return x.id===d.id?Object.assign({},x,{currentPrice:v}):x;});return pf;});
     MODAL=null;render();toast("Prezzo aggiornato");
   },
+  sellTutto:function(d){
+    var p=findPos(d.id);if(!p)return;
+    var qEl=document.getElementById("s_qty");
+    if(qEl){qEl.value=String(p.quantity);sellCalc();}
+  },
   saveSell:function(d){
     var p=findPos(d.id);if(!p)return;
+    var qEl=document.getElementById("s_qty");
+    var q=qEl?num(qEl.value):p.quantity;
+    if(!(q>0)){toast("La quantit\u00e0 da vendere deve essere maggiore di zero");return;}
+    if(q>p.quantity+1e-9){toast("Hai solo "+p.quantity+" unit\u00e0 di questo titolo");return;}
     var price=num(document.getElementById("s_price").value);
     var date=document.getElementById("s_date").value||today();
     var rEl=document.getElementById("s_rate");
     var rate=p.currency!=="EUR"?(num(rEl&&rEl.value)||S.rates[p.currency]||1):1;
+    var resta=p.quantity-q, parziale=resta>1e-9;
+    /* le unita' vendute vengono prese in proporzione da ogni acquisto, cosi' sia la parte
+       venduta sia quella rimasta conservano la loro storia di date e prezzi */
+    var taglio=staccaQuota(p,q);
     updateActive(function(pf){
-      pf.positions=pf.positions.filter(function(x){return x.id!==p.id;});
-      pf.closed=[Object.assign({},p,{sellPrice:price,sellDate:date,sellRate:rate,id:uid()})].concat(pf.closed);
+      if(parziale){
+        pf.positions=pf.positions.map(function(x){
+          if(x.id!==p.id) return x;
+          var y=Object.assign({},x); y.lotti=taglio.restanti; return ricalcola(y);
+        });
+      }else{
+        pf.positions=pf.positions.filter(function(x){return x.id!==p.id;});
+      }
+      var chiuso=Object.assign({},p,{sellPrice:price,sellDate:date,sellRate:rate,id:uid()});
+      chiuso.lotti=taglio.venduti; ricalcola(chiuso);
+      pf.closed=[chiuso].concat(pf.closed);
       return pf;});
-    MODAL=null;TAB="hist";render();toast("Vendita registrata");
+    MODAL=null;TAB="hist";render();
+    toast(parziale?"Vendute "+q+" unit\u00e0, ne restano "+(Math.round(resta*1e6)/1e6):"Vendita registrata");
   },
   saveDiv:function(){
     var name=document.getElementById("d_name").value.trim();
@@ -956,6 +1398,7 @@ document.getElementById("fileIn").addEventListener("change",function(e){
 
 /* ============ avvio ============ */
 load();
+caricaUI();
 render();
 if("serviceWorker" in navigator){
   window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){});});

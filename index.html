@@ -95,6 +95,8 @@ select.input{background-image:none;}
 .stars{position:relative;display:inline-block;font-size:14px;line-height:1;letter-spacing:1px;font-family:Arial,sans-serif;white-space:nowrap;}
 .stars .base{color:#2A3341;}
 .stars .fill{position:absolute;top:0;left:0;white-space:nowrap;overflow:hidden;color:var(--brass);}
+.stars .fill.neg{color:var(--down);}
+.starval.neg{color:var(--down);}
 .starline{display:inline-flex;align-items:center;gap:7px;}
 .starval{font-size:12.5px;color:var(--brass);font-weight:600;}
 .seg{display:flex;gap:6px;margin-bottom:14px;}
@@ -138,7 +140,6 @@ var TYPES=["Azione","Obbligazione","Titolo di Stato","ETF","Fondo","Certificato 
 var CURRENCIES=["EUR","USD","GBP","CHF","JPY"];
 var DEFAULT_RATES={EUR:1,USD:0.92,GBP:1.17,CHF:1.04,JPY:0.0061};
 var TYPE_COLORS={"Azione":"#C9A24B","Obbligazione":"#6E8FB8","Titolo di Stato":"#4FB286","ETF":"#B07BC4","Fondo":"#D98E5A","Certificato di deposito":"#5AB3B0","Altro":"#8B94A6"};
-var PRIORS={price:{m:2,s:5},resa:{m:0,s:400},total:{m:3,s:5}};
 
 /* ============ utilità ============ */
 var eurFmt=new Intl.NumberFormat("it-IT",{style:"currency",currency:"EUR"});
@@ -153,25 +154,56 @@ function upc(n){return n>=0?"var(--up)":"var(--down)";}
 function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
 function n2(v){return Math.round(v*100)/100;}
 function mean(a){return a.length?a.reduce(function(s,x){return s+x;},0)/a.length:0;}
-function stdev(a){if(a.length<2)return 0;var m=mean(a);return Math.sqrt(a.reduce(function(s,x){return s+(x-m)*(x-m);},0)/(a.length-1));}
 
+/* funzione errore, serve alla parte gaussiana della scala */
 function erf(x){var s=x<0?-1:1;x=Math.abs(x);var t=1/(1+0.3275911*x);
 var y=1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-x*x);return s*y;}
 function normCdf(z){return 0.5*(1+erf(z/Math.SQRT2));}
-function normInv(p){if(p<=0)return -3;if(p>=1)return 3;
-var a=[-39.6968302866538,220.946098424521,-275.928510446969,138.357751867269,-30.6647980661472,2.50662827745924];
-var b=[-54.4760987982241,161.585836858041,-155.698979859887,66.8013118877197,-13.2806815528857];
-var c=[-0.00778489400243029,-0.322396458041136,-2.40075827716184,-2.54973253934373,4.37466414146497,2.93816398269878];
-var d=[0.00778469570904146,0.32246712907004,2.445134137143,3.75440866190742];
-var pl=0.02425,ph=1-pl,q,r;
-if(p<pl){q=Math.sqrt(-2*Math.log(p));return(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);}
-if(p>ph){q=Math.sqrt(-2*Math.log(1-p));return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);}
-q=p-0.5;r=q*q;
-return(((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q/(((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1);}
-function distFor(values,prior,k){k=k||2;var n=values.length,em=mean(values),es=stdev(values);
-var mu=(k*prior.m+n*em)/(k+n);var sigma=(k*prior.s+n*(es||prior.s))/(k+n);
-if(!(sigma>0))sigma=prior.s;return{mu:mu,sigma:sigma};}
-function starsFor(x,dist){return Math.max(0,Math.min(10,Math.round(10*normCdf((x-dist.mu)/dist.sigma)*2)/2));}
+
+/* ============ valutazione a stelle ============
+   Scala ibrida e simmetrica rispetto allo zero:
+   - da 0 a 5 stelle andamento lineare, fino alla media dei soli titoli in guadagno
+   - da 5 a 10 stelle andamento gaussiano, fino al valore piu' alto del portafoglio
+     escludendo il 2% dei risultati migliori
+   Sotto lo zero vale la stessa identica curva col segno meno, fino a -10. */
+function riferimento(values){
+  var pos=values.filter(function(v){return v>0;});
+  if(!pos.length) return 0;
+  return mean(pos);
+}
+/* il massimo escludendo il 2% dei valori piu' alti (con pochi titoli coincide col massimo) */
+function riferimentoAlto(values){
+  var pos=values.filter(function(v){return v>0;}).sort(function(a,b){return b-a;});
+  if(!pos.length) return 0;
+  var scarta=Math.floor(pos.length*0.02);
+  return pos[Math.min(scarta,pos.length-1)];
+}
+function curvaStelle(x,mu,alto){
+  if(!(mu>0)||!isFinite(x)) return 0;
+  var segno=x<0?-1:1, v=Math.abs(x);
+  if(v<=mu) return segno*5*(v/mu);                 /* tratto lineare */
+  var top=(alto>mu*1.0001)?alto:mu*2;              /* se il vertice non e' definito, il doppio della media */
+  if(v>=top) return segno*10;
+  var sigma=(top-mu)/2;                            /* il vertice cade a due deviazioni standard */
+  var den=normCdf((top-mu)/sigma)-0.5;
+  if(!(den>0)) return segno*10;
+  return segno*(5+5*(normCdf((v-mu)/sigma)-0.5)/den);   /* tratto gaussiano */
+}
+function arrotondaStelle(s){
+  if(!isFinite(s)) return 0;
+  return Math.round(Math.max(-10,Math.min(10,s))*2)/2;
+}
+function starsFor(x,rif,alto){ return arrotondaStelle(curvaStelle(x,rif,alto)); }
+/* la terza valutazione nasce dai due valori combinati, non dalla media delle stelle:
+   ogni grandezza viene rapportata al proprio riferimento e si fa la media dei rapporti,
+   poi il risultato passa per la stessa curva */
+function starsCombinate(x1,r1,a1,x2,r2,a2){
+  var rapporti=[], vertici=[];
+  if(r1>0&&isFinite(x1)){ rapporti.push(x1/r1); vertici.push(a1>r1?a1/r1:2); }
+  if(r2>0&&isFinite(x2)){ rapporti.push(x2/r2); vertici.push(a2>r2?a2/r2:2); }
+  if(!rapporti.length) return 0;
+  return arrotondaStelle(curvaStelle(mean(rapporti),1,mean(vertici)));
+}
 
 /* ============ icone (SVG inline) ============ */
 var P={
@@ -239,6 +271,7 @@ var CRITERI=[
   {k:"resa",  n:"Resa effettiva (\u20ac)"},
   {k:"nom",   n:"Rendimento nominale"},
   {k:"nomtot",n:"Rend. nominale con cedole"},
+  {k:"peso",  n:"Peso nel portafoglio"},
   {k:"stelle",n:"Valutazione"}
 ];
 var CRITERI_C=[
@@ -248,7 +281,8 @@ var CRITERI_C=[
   {k:"valore",n:"Importo realizzato"},
   {k:"resa",  n:"Resa effettiva (\u20ac)"},
   {k:"nom",   n:"Rendimento nominale"},
-  {k:"nomtot",n:"Rend. nominale con cedole"}
+  {k:"nomtot",n:"Rend. nominale con cedole"},
+  {k:"stelle",n:"Valutazione"}
 ];
 var CRITERI_DIV=[{k:"data",n:"Data"},{k:"importo",n:"Importo"},{k:"nome",n:"Nome"}];
 function nomeCriterioDiv(campo){var r="Data";CRITERI_DIV.forEach(function(c){if(c.k===campo)r=c.n;});return r;}
@@ -282,7 +316,8 @@ function ordina(lista,chiusi,stato,D){
       case "nom":    return m.rendNom;
       case "nomtot": return m.rendNomTot;
       case "data":   return new Date(p.sellDate||p.buyDate||0).getTime();
-      case "stelle": var s=starsOf(m,D||dists()); return (s.price+s.resa+s.total)/3;
+      case "stelle": return starsOf(m,D||dists()).media;
+      case "peso":   return m.value;
       default: return 0;
     }
   };
@@ -449,7 +484,7 @@ function metrics(p,closed){
   var buyRate=p.buyRate==null?1:p.buyRate;
   var end=closed?new Date(p.sellDate):new Date();
   var invested=p.quantity*p.buyPrice*buyRate;
-  var value=p.quantity*price*endRate;
+  var value=p.quantity*price*endRate-(closed?(p.tax||0):0);   /* al netto delle tasse indicate alla vendita */
   var capGain=value-invested;
   var income=incomeLotto(p,closed);
   var years=anniPesati(p,end);
@@ -469,19 +504,31 @@ function aggregate(list,closed){
   return{inv:inv,val:val,cap:cap,inc:inc,years:years,rendNom:r*100,rendNomTot:rt*100,
     annLin:(rt/years)*100,annTae:tae(1+rt),priceAnnLin:(r/years)*100,priceAnnTae:tae(1+r),resa:cap+inc};
 }
+/* Riferimenti condivisi fra portafoglio attuale e storico, cosi' un voto significa
+   la stessa cosa nelle due schermate. Le tre valutazioni sono:
+   1) rendimento nominale comprensivo di cedole (%)  2) resa complessiva (euro)
+   3) le due precedenti combinate in proporzione ai rispettivi riferimenti */
 function dists(){
-  var ms=active().positions.map(function(p){return metrics(p,false);});
-  return{price:distFor(ms.map(function(m){return m.priceAnnTae;}),PRIORS.price),
-    resa:distFor(ms.map(function(m){return m.resa;}),PRIORS.resa),
-    total:distFor(ms.map(function(m){return m.annTae;}),PRIORS.total)};
+  var A=active(), r1=[], r2=[];
+  A.positions.forEach(function(p){var m=metrics(p,false);r1.push(m.rendNomTot);r2.push(m.resa);});
+  A.closed.forEach(function(c){var m=metrics(c,true);r1.push(m.rendNomTot);r2.push(m.resa);});
+  return {rend:riferimento(r1), rendAlto:riferimentoAlto(r1),
+          resa:riferimento(r2), resaAlto:riferimentoAlto(r2)};
 }
-function starsOf(m,D){return{price:starsFor(m.priceAnnTae,D.price),resa:starsFor(m.resa,D.resa),total:starsFor(m.annTae,D.total)};}
+function starsOf(m,D){
+  return {rend:starsFor(m.rendNomTot,D.rend,D.rendAlto),
+          resa:starsFor(m.resa,D.resa,D.resaAlto),
+          media:starsCombinate(m.rendNomTot,D.rend,D.rendAlto,m.resa,D.resa,D.resaAlto)};
+}
 
 /* ============ pezzi di interfaccia ============ */
 function stars(v){
-  return '<span class="starline"><span class="stars"><span class="base">\u2605\u2605\u2605\u2605\u2605\u2605\u2605\u2605\u2605\u2605</span>'+
-  '<span class="fill" style="width:'+(v/10*100)+'%">\u2605\u2605\u2605\u2605\u2605\u2605\u2605\u2605\u2605\u2605</span></span>'+
-  '<span class="num starval">'+v.toFixed(1)+'/10</span></span>';
+  v=isFinite(v)?v:0;
+  var neg=v<0, largh=Math.min(100,Math.abs(v)/10*100);
+  var cinque="\u2605\u2605\u2605\u2605\u2605\u2605\u2605\u2605\u2605\u2605";
+  return '<span class="starline"><span class="stars"><span class="base">'+cinque+'</span>'+
+  '<span class="fill'+(neg?" neg":"")+'" style="width:'+largh+'%">'+cinque+'</span></span>'+
+  '<span class="num starval'+(neg?" neg":"")+'">'+(neg?"\u2212":"")+Math.abs(v).toFixed(1)+'/10</span></span>';
 }
 function row(k,v,color){
   return '<div class="lrow"><span class="lk">'+k+'</span><span class="lv num"'+(color?' style="color:'+color+'"':'')+'>'+v+'</span></div>';
@@ -572,34 +619,53 @@ function scheda(id, titolo, contenuto){
 }
 
 function radar(items,unit,title,id){
-  var N=items.length;
-  if(N<3)return"";
-  var cx=110,cy=112,R=72,out="";
-  var vals=items.map(function(d){return d.value;});
-  var mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);
-  if(mn===mx){mn=mn-Math.abs(mn||1);mx=mx+Math.abs(mx||1);}
-  function rr(v){return 0.18*R+0.82*R*((v-mn)/(mx-mn));}
-  function pt(i,r){var a=-Math.PI/2+i/N*Math.PI*2;return[n2(cx+r*Math.cos(a)),n2(cy+r*Math.sin(a))];}
-  [0.25,0.5,0.75,1].forEach(function(f){
-    var pts=[];for(var i=0;i<N;i++)pts.push(pt(i,R*f).join(","));
-    out+='<polygon points="'+pts.join(" ")+'" fill="none" stroke="#2A3341" stroke-width="1"/>';});
-  for(var i=0;i<N;i++){var p=pt(i,R);out+='<line x1="'+cx+'" y1="'+cy+'" x2="'+p[0]+'" y2="'+p[1]+'" stroke="#2A3341"/>';}
-  var dpts=[];for(var j=0;j<N;j++)dpts.push(pt(j,rr(items[j].value)).join(","));
-  out+='<polygon points="'+dpts.join(" ")+'" fill="#C9A24B" fill-opacity="0.28" stroke="#C9A24B" stroke-width="1.6"/>';
-  for(var k=0;k<N;k++){
-    var q=pt(k,R+15),a=-Math.PI/2+k/N*Math.PI*2,co=Math.cos(a);
-    var anch=co>0.3?"start":(co<-0.3?"end":"middle");
-    var nm=items[k].name.length>13?items[k].name.slice(0,12)+"\u2026":items[k].name;
-    out+='<text x="'+q[0]+'" y="'+(q[1]+3)+'" text-anchor="'+anch+'" font-size="9.5" fill="#8B94A6">'+esc(nm)+'</text>';
-    var pv=pt(k,rr(items[k].value));
-    out+='<circle cx="'+pv[0]+'" cy="'+pv[1]+'" r="2.6" fill="#C9A24B"/>';
+  /* Mostra sempre tutte le categorie, cosi' il confronto fra portafogli resta stabile.
+     "Altro" compare solo se davvero usata. Lo zero non sta al centro ma a un quinto
+     del raggio: dentro quell'anello finiscono i valori negativi. */
+  var mappa={}; items.forEach(function(d){mappa[d.name]=d.value;});
+  var cat=TYPES.filter(function(t){return t!=="Altro"||mappa.hasOwnProperty("Altro");});
+  var dati=cat.map(function(t){return {name:t, value:mappa.hasOwnProperty(t)?mappa[t]:null};});
+  var N=dati.length; if(N<3) return "";
+  var presenti=dati.filter(function(d){return d.value!==null;});
+  if(!presenti.length) return "";
+  var cx=118,cy=120,R=76,Z=R/5;   /* Z = raggio della circonferenza dello zero */
+  var vals=presenti.map(function(d){return d.value;});
+  var mx=Math.max.apply(null,vals), mn=Math.min.apply(null,vals);
+  var posMax=Math.max(mx,0)||1, negMin=Math.min(mn,0);
+  function rr(v){
+    if(v===null) return Z;
+    if(v>=0) return Z+(R-Z)*(posMax>0?Math.min(1,v/posMax):0);
+    return negMin<0 ? Z*(1-Math.min(1,v/negMin)) : Z;
   }
+  function pt(i,r){var a=-Math.PI/2+i/N*Math.PI*2;return[n2(cx+r*Math.cos(a)),n2(cy+r*Math.sin(a))];}
+  var out="";
+  [0.4,0.6,0.8,1].forEach(function(f){
+    var pts=[];for(var i=0;i<N;i++)pts.push(pt(i,Z+(R-Z)*f).join(","));
+    out+='<polygon points="'+pts.join(" ")+'" fill="none" stroke="#2A3341" stroke-width="1"/>';});
+  for(var i=0;i<N;i++){var q=pt(i,R);out+='<line x1="'+cx+'" y1="'+cy+'" x2="'+q[0]+'" y2="'+q[1]+'" stroke="#2A3341"/>';}
+  /* ragnatela rossa dello zero */
+  var zp=[];for(var z=0;z<N;z++)zp.push(pt(z,Z).join(","));
+  out+='<polygon points="'+zp.join(" ")+'" fill="none" stroke="#DC7A6B" stroke-width="1.4" stroke-dasharray="3 2.5" opacity="0.85"/>';
+  /* area dei dati: le categorie senza titoli restano appoggiate allo zero */
+  var dp=[];for(var j2=0;j2<N;j2++)dp.push(pt(j2,rr(dati[j2].value)).join(","));
+  out+='<polygon points="'+dp.join(" ")+'" fill="#C9A24B" fill-opacity="0.28" stroke="#C9A24B" stroke-width="1.6"/>';
+  for(var k2=0;k2<N;k2++){
+    var q2=pt(k2,R+16),a2=-Math.PI/2+k2/N*Math.PI*2,co=Math.cos(a2);
+    var anch=co>0.3?"start":(co<-0.3?"end":"middle");
+    var nm=dati[k2].name.length>13?dati[k2].name.slice(0,12)+"\u2026":dati[k2].name;
+    var vuota=dati[k2].value===null;
+    out+='<text x="'+q2[0]+'" y="'+(q2[1]+3)+'" text-anchor="'+anch+'" font-size="9.5" fill="'+(vuota?"#4a525f":"#8B94A6")+'">'+esc(nm)+'</text>';
+    if(!vuota){
+      var pv=pt(k2,rr(dati[k2].value));
+      out+='<circle cx="'+pv[0]+'" cy="'+pv[1]+'" r="2.6" fill="'+(dati[k2].value<0?"#DC7A6B":"#C9A24B")+'"/>';
+    }
+  }
+  var legenda='<div class="legend"><div class="leg"><span class="dot" style="background:#DC7A6B"></span>linea dello zero</div>'+
+    (negMin<0?'<div class="leg">dentro la linea rossa = valori negativi</div>':"")+'</div>';
   return scheda(id, title,
-    '<svg viewBox="0 0 220 232" width="100%" preserveAspectRatio="xMidYMid meet">'+out+'</svg>');
+    '<svg viewBox="0 0 236 244" width="100%" preserveAspectRatio="xMidYMid meet">'+out+'</svg>'+legenda);
 }
 
-/* costruisce l'intero set di grafici per una lista di lotti (aperti o chiusi),
-   in modo che portafoglio attuale e storico mostrino gli stessi grafici */
 function graficiPortafoglio(lista, chiusi, prefisso){
   if(!lista.length) return "";
   var byType={};
@@ -622,8 +688,12 @@ function graficiPortafoglio(lista, chiusi, prefisso){
     return{name:p.name, a:Math.round(m.capGain), b:Math.round(m.income)};});
   var radRet=Object.keys(g).map(function(k){return{name:k,value:n2(mean(g[k].map(function(m){return m.rendNomTot;})))};});
   var radResa=Object.keys(g).map(function(k){return{name:k,value:Math.round(g[k].reduce(function(s,m){return s+m.resa;},0))};});
+  var Dv=dists();
+  var radVoto=Object.keys(g).map(function(k){
+    return{name:k, value:n2(mean(g[k].map(function(m){return starsOf(m,Dv).media;})))};});
   var x=prefisso;
   return donut(comp,"Composizione per tipo",x+"comp")+
+    radar(radVoto,"voto","Valutazione media per categoria (stelle)",x+"radvoto")+
     radar(radRet,"pct","Rendimento compr. medio per categoria (%)",x+"radret")+
     bars(catRet,"pct","Rendimento medio per categoria (%)",x+"catret")+
     radar(radResa,"eur","Resa effettiva per categoria (\u20ac)",x+"radresa")+
@@ -639,7 +709,7 @@ function val3(a,st){
   row("Rend. titolo ann. (lin./TAE)",pct(a.priceAnnLin)+" / "+pct(a.priceAnnTae),upc(a.priceAnnLin))+
   row("Rend. complessivo ann. (lin./TAE)",pct(a.annLin)+" / "+pct(a.annTae),upc(a.annLin))+
   row("Resa effettiva complessiva",fmtSigned(a.resa),upc(a.resa))+
-  (st?rowRaw("Valutazione media",stars((st.price+st.resa+st.total)/3),"head-row"):"")+"</div>";
+  (st?rowRaw("Valutazione media",stars(st.media),"head-row"):"")+"</div>";
 }
 
 function screenAtt(){
@@ -648,7 +718,8 @@ function screenAtt(){
   var pstars=null;
   if(A.positions.length){
     var arr=A.positions.map(function(p){return starsOf(metrics(p,false),D);});
-    pstars={price:mean(arr.map(function(s){return s.price;})),resa:mean(arr.map(function(s){return s.resa;})),total:mean(arr.map(function(s){return s.total;}))};
+    pstars={rend:mean(arr.map(function(s){return s.rend;})),resa:mean(arr.map(function(s){return s.resa;})),
+            media:mean(arr.map(function(s){return s.media;}))};
   }
   var h='<div class="summary"><div class="sum-label">Valore attuale del portafoglio</div>'+
   '<div class="sum-value num">'+fmt(agg.val)+'</div>'+
@@ -674,8 +745,8 @@ function screenAtt(){
       h+='<div class="card" data-act="openPos" data-id="'+p.id+'"><div class="card-top"><div><span class="name">'+esc(p.name)+'</span>'+
       badge(p.type)+(p.currency!=="EUR"?'<span class="ccy">'+esc(p.currency)+'</span>':"")+'</div>'+
       '<div><div class="card-val num">'+fmt(m.value)+'</div>'+
-      '<div class="card-peso num">'+peso.toFixed(1)+'% del totale</div></div></div>'+
-      '<div class="card-sub">'+stars(st.total)+
+      '<div class="card-peso num">'+(Math.round(p.currentPrice*1e4)/1e4)+' '+esc(p.currency)+'</div></div></div>'+
+      '<div class="card-sub">'+stars(st.media)+
       '<span class="chip num" style="color:'+upc(m.resa)+'">'+fmtSigned(m.resa)+
       (lottiDi(p).length>1?'<span style="color:var(--muted);font-weight:500"> \u00b7 '+lottiDi(p).length+' acquisti</span>':"")+
       '</span></div></div>';
@@ -753,7 +824,11 @@ function screenHist(){
   var h='<div class="summary"><div class="sum-label">Risultato realizzato (chiusi)</div>'+
   '<div class="sum-value num" style="color:'+upc(agg.resa)+'">'+fmtSigned(agg.resa)+'</div>'+
   '<div class="sum-chip" style="color:var(--muted)">'+A.closed.length+' posizioni chiuse</div>'+
-  (A.closed.length?val3(agg,null):"")+'</div>';
+  (A.closed.length?val3(agg,(function(){
+    var Dz=dists(), ar=A.closed.map(function(c){return starsOf(metrics(c,true),Dz);});
+    return {rend:mean(ar.map(function(x){return x.rend;})),resa:mean(ar.map(function(x){return x.resa;})),
+            media:mean(ar.map(function(x){return x.media;}))};
+  })()):"")+'</div>';
   h+='<div class="sec-label"><span class="sec-toggle" data-act="toggleSez" data-v="listaC">'+ic("history",13)+
   ' Investimenti conclusi <span class="sec-count">('+A.closed.length+')</span>'+
   '<span class="chev'+(UI.listaC?" giu":"")+'">'+ic("chevron",14)+'</span></span>'+
@@ -763,11 +838,13 @@ function screenHist(){
   if(!A.closed.length){
     h+='<div class="empty">'+ic("history",34)+'<div>Ancora nessuna posizione chiusa.<br>Vendi un titolo per vederlo qui.</div></div>';
   }else if(UI.listaC){
-    ordina(A.closed,true,UI.ordC,null).forEach(function(c){
-      var m=metrics(c,true);
+    var Dc=dists();
+    ordina(A.closed,true,UI.ordC,Dc).forEach(function(c){
+      var m=metrics(c,true), stc=starsOf(m,Dc);
       h+='<div class="card" data-act="openClosed" data-id="'+c.id+'"><div class="card-top"><div><span class="name">'+esc(c.name)+'</span>'+
-      badge(c.type)+'</div><div class="card-val num" style="color:'+upc(m.resa)+'">'+fmtSigned(m.resa)+'</div></div>'+
-      '<div class="card-sub"><span class="num">'+c.quantity+' unit\u00e0 \u00b7 ann. '+pct(m.annTae)+'</span><span>'+dLabel(c.buyDate)+' \u2013 '+dLabel(c.sellDate)+'</span></div></div>';
+      badge(c.type)+'</div><div><div class="card-val num" style="color:'+upc(m.resa)+'">'+fmtSigned(m.resa)+'</div>'+
+      '<div class="card-peso num">'+(Math.round(c.sellPrice*1e4)/1e4)+' '+esc(c.currency)+'</div></div></div>'+
+      '<div class="card-sub">'+stars(stc.media)+'<span class="num">'+c.quantity+' unit\u00e0 \u00b7 '+dLabel(c.sellDate)+'</span></div></div>';
     });
   }
   if(A.closed.length){
@@ -864,8 +941,12 @@ function graficiMisti(voci, prefisso){
   var perTitleResa=M.map(function(o){return{name:o.p.name, a:Math.round(o.m.capGain), b:Math.round(o.m.income)};});
   var radRet=Object.keys(g).map(function(k){return{name:k,value:n2(mean(g[k].map(function(m){return m.rendNomTot;})))};});
   var radResa=Object.keys(g).map(function(k){return{name:k,value:Math.round(g[k].reduce(function(s,m){return s+m.resa;},0))};});
+  var Dv=dists();
+  var radVoto=Object.keys(g).map(function(k){
+    return{name:k, value:n2(mean(g[k].map(function(m){return starsOf(m,Dv).media;})))};});
   var x=prefisso;
   return donut(comp,"Composizione per tipo",x+"comp")+
+    radar(radVoto,"voto","Valutazione media per categoria (stelle)",x+"radvoto")+
     radar(radRet,"pct","Rendimento compr. medio per categoria (%)",x+"radret")+
     bars(catRet,"pct","Rendimento medio per categoria (%)",x+"catret")+
     radar(radResa,"eur","Resa effettiva per categoria (\u20ac)",x+"radresa")+
@@ -946,10 +1027,12 @@ function elencoAcquisti(p){
       '. I rendimenti annualizzati e le stelle pesano ogni acquisto per il capitale e per il tempo in cui l\'hai tenuto.</div>':"")+
     '<div style="height:1px;background:var(--line);margin:14px 0"></div>';
 }
-function detailRows(m,st,peso){
+function detailRows(m,st,peso,prezzo,valuta,chiuso,tasse){
   return '<div class="ledger">'+
   row("Importo investito",fmt(m.invested))+
-  row("Valore attuale",fmt(m.value))+
+  (prezzo!=null?row(chiuso?"Prezzo di vendita":"Prezzo corrente",(Math.round(prezzo*1e4)/1e4)+" "+esc(valuta||"EUR")):"")+
+  row(chiuso?"Incassato netto":"Valore attuale",fmt(m.value))+
+  (tasse>0?row("di cui tasse pagate","\u2212"+fmt(tasse),"var(--down)"):"")+
   (peso!=null?row("Peso nel portafoglio",peso.toFixed(1)+"%","var(--brass)"):"")+
   row("Plus / minusvalenza",fmtSigned(m.capGain),upc(m.capGain))+
   row("Rendimento nominale",pct(m.rendNom),upc(m.rendNom))+
@@ -957,7 +1040,7 @@ function detailRows(m,st,peso){
   row("Rend. nominale con cedole/div.",pct(m.rendNomTot),upc(m.rendNomTot))+
   row("Rend. annualizzato compr. (lin. / TAE)",pct(m.annLin)+" / "+pct(m.annTae),upc(m.annLin))+
   row("Resa effettiva complessiva",fmtSigned(m.resa),upc(m.resa))+
-  (st?rowRaw("Rendimento titolo",stars(st.price),"head-row")+rowRaw("Resa economica",stars(st.resa))+rowRaw("Rendimento complessivo",stars(st.total)):"")+
+  (st?rowRaw("Rendimento con cedole",stars(st.rend),"head-row")+rowRaw("Resa complessiva",stars(st.resa))+rowRaw("Valutazione media",stars(st.media)):"")+
   '</div>';
 }
 
@@ -991,7 +1074,7 @@ function renderModal(){
     var peso=tot>0?(m.value/tot*100):0;
     h=sheetHead(esc(p.name)+badge(p.type),p.quantity+" unit\u00e0 \u00b7 acquisto "+p.buyPrice+" "+esc(p.currency)+" \u00b7 "+dLabel(p.buyDate))+
     '<div style="display:flex;justify-content:flex-end;margin-bottom:-4px"><button class="starbtn" data-act="openLegend">'+ic("info",14)+' Legenda stelle</button></div>'+
-    detailRows(m,st,peso)+
+    detailRows(m,st,peso,p.currentPrice,p.currency)+
     elencoAcquisti(p)+
     '<div class="actions" style="margin-top:16px">'+
     '<button class="act" data-act="posPrice" data-id="'+p.id+'">'+ic("refresh",19)+' Aggiorna prezzo attuale</button>'+
@@ -1010,7 +1093,7 @@ function renderModal(){
   else if(k==="posC"){
     var c=findClosed(MODAL.id);if(!c){MODAL=null;root.innerHTML="";return;}
     h=sheetHead(esc(c.name)+badge(c.type),"Chiuso il "+dLabel(c.sellDate)+" \u00b7 "+c.quantity+" unit\u00e0")+
-    detailRows(metrics(c,true),null)+
+    detailRows(metrics(c,true),starsOf(metrics(c,true),dists()),null,c.sellPrice,c.currency,true,c.tax||0)+
     '<button class="btn btn-danger" data-act="closedDel" data-id="'+c.id+'">Elimina dallo storico</button>';
   }
   else if(k==="price"){
@@ -1032,7 +1115,12 @@ function renderModal(){
     '<input class="input" type="date" id="s_date" value="'+today()+'"></div>'+
     (fo?'<div class="field"><label class="label">Cambio (1 '+esc(ps.currency)+' = \u20ac)</label>'+
     '<input class="input num" inputmode="decimal" id="s_rate" value="'+(S.rates[ps.currency]||1)+'" data-act="sellCalc"></div>':"<div class=\"field\"></div>")+'</div>'+
-    '<div class="lrow head-row"><span class="lk">Plus/minus in euro</span><span class="lv num" id="s_res">\u2014</span></div>'+
+    '<div class="field"><label class="label">Tasse sul capital gain (\u20ac, facoltativo)</label>'+
+    '<input class="input num" inputmode="decimal" id="s_tax" value="" placeholder="0,00" data-act="sellCalc"></div>'+
+    '<div class="hint" style="margin-top:-6px">Lascia vuoto se la plusvalenza \u00e8 compensata da minusvalenze pregresse. '+
+    'L\'importo indicato viene sottratto dal risultato della vendita.</div>'+
+    '<div class="lrow head-row"><span class="lk">Plus/minus lorda</span><span class="lv num" id="s_res">\u2014</span></div>'+
+    '<div class="lrow"><span class="lk">Plus/minus al netto delle tasse</span><span class="lv num" id="s_netto">\u2014</span></div>'+
     '<div class="lrow"><span class="lk">Cedole che seguono la vendita</span><span class="lv num" id="s_div">\u2014</span></div>'+
     '<div class="lrow"><span class="lk">Dopo la vendita restano</span><span class="lv num" id="s_resta">\u2014</span></div>'+
     '<button class="btn btn-primary" data-act="saveSell" data-id="'+ps.id+'">Registra vendita</button>';
@@ -1109,16 +1197,39 @@ function renderModal(){
   }
   else if(k==="legend"){
     var D=dists();
-    var rows=[["Rendimento titolo (ann.)",D.price,"%"],["Resa economica (\u20ac)",D.resa,"\u20ac"],["Rendimento complessivo (ann.)",D.total,"%"]];
-    h=sheetHead("Come leggere le stelle","Scala 0\u201310, distribuzione gaussiana adattiva")+
-    '<div class="hint">Le 5 stelle corrispondono al valore medio del tuo portafoglio (fuso con un riferimento di partenza). '+
-    'Salendo di una deviazione standard sali verso 8,4\u2605, scendendo verso 1,6\u2605. La scala si ricalibra man mano che aggiungi o aggiorni i titoli.</div>'+
+    var rows=[["Rendimento con cedole",D.rend,D.rendAlto,"%"],["Resa complessiva",D.resa,D.resaAlto,"\u20ac"]];
+    function f(x,u){return u==="\u20ac"?Math.round(x)+" \u20ac":x.toFixed(2)+"%";}
+    h=sheetHead("Come leggere le stelle","Da \u221210 a +10, lineare sotto le 5 e gaussiana sopra")+
+    '<div class="hint">Zero stelle significa esattamente zero: n\u00e9 guadagno n\u00e9 perdita. '+
+    'Fino a cinque stelle la scala sale in modo lineare e le cinque stelle corrispondono alla media dei soli titoli in guadagno. '+
+    'Da cinque a dieci la scala segue una curva gaussiana: le dieci stelle spettano al risultato migliore del portafoglio, '+
+    'escludendo il 2% dei risultati pi\u00f9 alti, cos\u00ec un singolo caso eccezionale non schiaccia tutti gli altri. '+
+    'Salire oltre le cinque stelle \u00e8 quindi via via pi\u00f9 difficile. '+
+    'Sotto lo zero vale la stessa identica curva col segno meno e le stelle diventano rosse. '+
+    'I riferimenti si ricalcolano da soli e valgono sia per il portafoglio attuale sia per lo storico.</div>'+
     rows.map(function(r){
-      function v(st){return r[1].mu+r[1].sigma*normInv(st/10);}
-      function f(x){return r[2]==="\u20ac"?Math.round(x)+" \u20ac":x.toFixed(1)+"%";}
+      var mu=r[1], alto=r[2], u=r[3];
+      if(!(mu>0)) return '<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:600;margin-bottom:6px">'+r[0]+'</div>'+
+        '<div class="hint" style="margin:0">Nessun titolo in guadagno: la scala non \u00e8 ancora calibrata.</div></div>';
+      var top=(alto>mu*1.0001)?alto:mu*2;
+      /* valore corrispondente a 2,5 / 5 / 7,5 / 10 stelle, letto sulla curva reale */
+      function inverso(target){
+        if(target<=5) return mu*target/5;
+        var lo=mu, hi=top;
+        for(var i=0;i<40;i++){var mid=(lo+hi)/2; if(curvaStelle(mid,mu,alto)<target) lo=mid; else hi=mid;}
+        return (lo+hi)/2;
+      }
       return '<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:600;margin-bottom:6px">'+r[0]+'</div>'+
-      '<table class="legtable"><thead><tr><th>Stelle</th><th>2,5\u2605</th><th>5\u2605</th><th>7,5\u2605</th></tr></thead>'+
-      '<tbody><tr><td>Valore</td><td class="num">'+f(v(2.5))+'</td><td class="num">'+f(v(5))+'</td><td class="num">'+f(v(7.5))+'</td></tr></tbody></table></div>';}).join("");
+      '<table class="legtable"><thead><tr><th>Stelle</th><th>2,5\u2605</th><th>5\u2605</th><th>7,5\u2605</th><th>10\u2605</th></tr></thead>'+
+      '<tbody><tr><td>Valore</td><td class="num">'+f(inverso(2.5),u)+'</td><td class="num">'+f(mu,u)+'</td>'+
+      '<td class="num">'+f(inverso(7.5),u)+'</td><td class="num">'+f(top,u)+'</td></tr>'+
+      '<tr><td>In negativo</td><td class="num" style="color:var(--down)">'+f(-inverso(2.5),u)+'</td>'+
+      '<td class="num" style="color:var(--down)">'+f(-mu,u)+'</td>'+
+      '<td class="num" style="color:var(--down)">'+f(-inverso(7.5),u)+'</td>'+
+      '<td class="num" style="color:var(--down)">'+f(-top,u)+'</td></tr></tbody></table></div>';
+    }).join("")+
+    '<div class="hint">La terza valutazione non \u00e8 la media delle due stelle: rapporta ciascun valore al proprio '+
+    'riferimento, fa la media dei due rapporti e poi applica la stessa curva.</div>';
   }
   else if(k==="pf"){
     h=sheetHead("Portafogli","Passa da un portafoglio all\'altro o creane di nuovi")+
@@ -1187,6 +1298,11 @@ function sellCalc(){
   var v=(pr*rt-p.buyPrice*(p.buyRate==null?1:p.buyRate))*q;
   var el=document.getElementById("s_res");
   if(el){el.textContent=fmtSigned(v);el.style.color=upc(v);}
+  var tEl=document.getElementById("s_tax");
+  var tasse=tEl?num(tEl.value):0;
+  var netto=v-tasse;
+  var nEl=document.getElementById("s_netto");
+  if(nEl){nEl.textContent=fmtSigned(netto)+(tasse>0?"  (\u2212"+fmt(tasse)+")":"");nEl.style.color=upc(netto);}
   /* quota di cedole gia' maturate che segue le unita' vendute */
   var ced=incomeLotto(p,false)*quota;
   var dEl=document.getElementById("s_div");
@@ -1368,7 +1484,8 @@ var ACT={
       }else{
         pf.positions=pf.positions.filter(function(x){return x.id!==p.id;});
       }
-      var chiuso=Object.assign({},p,{sellPrice:price,sellDate:date,sellRate:rate,id:uid()});
+      var tEl2=document.getElementById("s_tax");
+      var chiuso=Object.assign({},p,{sellPrice:price,sellDate:date,sellRate:rate,tax:num(tEl2&&tEl2.value),id:uid()});
       chiuso.lotti=taglio.venduti; ricalcola(chiuso);
       pf.closed=[chiuso].concat(pf.closed);
       return pf;});

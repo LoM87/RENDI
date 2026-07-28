@@ -1,6 +1,6 @@
 /* Service worker: tiene l'app in memoria sul telefono così funziona senza rete.
    Quando aggiorni i file, cambia il numero di versione qui sotto (es. v2, v3...). */
-var CACHE = "rendi-v5";
+var CACHE = "rendi-v7";
 var FILES = [
   "./",
   "./index.html",
